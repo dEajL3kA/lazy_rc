@@ -1,4 +1,4 @@
-# lazy_rc – Lazy Rc<T> and Arc<T> smart pointers
+# lazy_rc – Lazy Rc&lt;T> and Arc&lt;T&gt;
 
 [![Crates.io][crates-badge]][crates-url]
 [![Unlicense][unlicense-badge]][unlicense-url]
@@ -8,7 +8,7 @@
 [unlicense-badge]: https://img.shields.io/badge/license-Unlicense-blue.svg
 [unlicense-url]: LICENSE
 
-**lazy_rc** provides implementations of Rc<T> and Arc<T> with lazy initialization.
+**lazy_rc** provides implementations of `Rc<T>` and `Arc<T>` with lazy initialization.
 
 **Crates.io:**  
 https://crates.io/crates/lazy_rc
