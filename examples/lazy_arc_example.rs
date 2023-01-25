@@ -4,18 +4,16 @@
  */
 use std::fmt::Debug;
 use std::io::Result;
-use std::rc::Rc;
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
 use chrono::{Timelike, Utc};
 use rand::random;
 
-use lazy_rc::LazyRc;
+use lazy_rc::LazyArc;
 
-thread_local! {
-    static INSTANCE: LazyRc<MyStruct> = LazyRc::empty();
-}
+static GLOBAL_INSTANCE: LazyArc<MyStruct> = LazyArc::empty();
 
 #[derive(Debug)]
 struct MyStruct {
@@ -29,10 +27,10 @@ impl MyStruct {
         Ok(Self { _value: random() })
     }
 
-    /// Returns a thread-local instance that will be created on first access.
+    /// Returns a global instance that will be created on first access.
     /// If the initialization function fails, then an Error will be returned.
-    pub fn instance() -> Result<Rc<Self>> {
-        INSTANCE.with(|instance| instance.or_try_init_with(Self::new))
+    pub fn instance() -> Result<Arc<Self>> {
+        GLOBAL_INSTANCE.or_try_init_with(Self::new)
     }
 }
 

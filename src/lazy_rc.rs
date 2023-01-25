@@ -5,7 +5,7 @@
 use std::rc::Rc;
 use std::cell::RefCell;
 
-use crate::shared::or_init_with;
+use crate::utils::{or_init_with, or_try_init_with};
 
 /// A single-threaded reference-counting pointer, akin to
 /// [`Rc<T>`](std::rc::Rc), but with ***lazy*** initialization
@@ -17,7 +17,7 @@ pub struct LazyRc<T> {
 impl<T> LazyRc<T> {
     /// Create a new `LazyArc<T>` that is initially *empty*. It's "inner" value
     /// will be [initialized](Self::or_init_with()) on first access!
-    pub fn empty() -> Self {
+    pub const fn empty() -> Self {
         Self {
             inner: RefCell::new(None)
         }
@@ -38,6 +38,11 @@ impl<T> LazyRc<T> {
         }
     }
 
+    /// Returns `true`, if and only if th "inner" value is initialized.
+    pub fn is_initialized(&self) -> bool {
+        self.inner.borrow().is_some()
+    }
+
     /// Returns a pointer to the existing "inner" value, or initializes the
     /// value right now.
     /// 
@@ -49,7 +54,7 @@ impl<T> LazyRc<T> {
     where
         F: FnOnce() -> T
     {
-        self.or_try_init_with::<(), _>(|| Ok(init_fn())).unwrap()
+        or_init_with(self.inner.borrow_mut(), || Rc::new(init_fn()))
     }
 
     /// Returns a pointer to the existing "inner" value, or tries to
@@ -65,7 +70,7 @@ impl<T> LazyRc<T> {
     where
         F: FnOnce() -> Result<T, E>
     {
-        or_init_with(self.inner.borrow_mut(), || init_fn().map(Rc::new))
+        or_try_init_with(self.inner.borrow_mut(), || init_fn().map(Rc::new))
     }
 
     /// Applies function `map_fn()` to the "inner", if already initialized.
@@ -88,7 +93,7 @@ impl<T> LazyRc<T> {
     /// "inner" value is **not** initialized yet, the value remains in the
     /// *uninitialized* state and the function returns `None`.
     pub fn value(&self) -> Option<Rc<T>> {
-        self.inner.borrow().as_ref().map(|value| value.clone())
+        self.inner.borrow().as_ref().cloned()
     }
 
     /// Takes the "inner" value out of this `LazyRc<T>` instance, if already
@@ -100,6 +105,13 @@ impl<T> LazyRc<T> {
     /// Otherwise, the function simply returns `None`.
     pub fn take(&mut self) -> Option<Rc<T>> {
         self.inner.get_mut().take()
+    }
+}
+
+impl <T> Default for LazyRc<T> {
+    /// The default value is a new ***empty*** `LazyRc<T>` instance.
+    fn default() -> Self {
+        Self::empty()
     }
 }
 

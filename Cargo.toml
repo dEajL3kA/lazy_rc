@@ -1,15 +1,20 @@
 [package]
 name = "lazy_rc"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license-file = "LICENSE"
-description = "lazy_rc provides implementations of Rc<T> and Arc<T> with lazy initialization."
+description = "Provides implementations of Rc<T> and Arc<T> with lazy initialization."
 homepage = "https://crates.io/crates/lazy_rc"
 documentation = "https://docs.rs/lazy_rc/latest/index.html"
 repository = "https://github.com/dEajL3kA/lazy_rc"
 readme = "README.md"
 
-[dependencies]
+[dev-dependencies]
+chrono = "0.4.23"
+rand = "0.8.5"
 
 [[example]]
 name = "lazy_rc_example"
+
+[[example]]
+name = "lazy_arc_example"

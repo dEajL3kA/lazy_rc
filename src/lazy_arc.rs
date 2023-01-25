@@ -2,31 +2,30 @@
  * lazy_rc - Rc<T> and Arc<T> with *lazy* initialization
  * This is free and unencumbered software released into the public domain.
  */
-use std::cell::RefCell;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
-use crate::shared::or_init_with;
+use crate::utils::{or_init_with, or_try_init_with};
 
 /// A thread-safe reference-counting pointer, akin to
 /// [`Arc<T>`](std::sync::Arc), but with ***lazy*** initialization
 #[derive(Debug)]
 pub struct LazyArc<T> {
-    inner: RefCell<Option<Arc<T>>>,
+    inner: RwLock<Option<Arc<T>>>,
 }
 
 impl<T> LazyArc<T> {
     /// Create a new `LazyArc<T>` that is initially *empty*. It's "inner" value
     /// will be [initialized](Self::or_init_with()) on first access!
-    pub fn empty() -> Self {
+    pub const fn empty() -> Self {
         Self {
-            inner: RefCell::new(None)
+            inner: RwLock::new(None)
         }
     }
 
     /// Create a new `LazyArc<T>` that is already initialized to `value`.
     pub fn from_value(value: T) -> Self {
         Self {
-            inner: RefCell::new(Some(Arc::new(value)))
+            inner: RwLock::new(Some(Arc::new(value)))
         }
     }
 
@@ -34,8 +33,13 @@ impl<T> LazyArc<T> {
     /// `Arc<T>` pointer.
     pub fn from_pointer(pointer: Arc<T>) -> Self {
         Self {
-            inner: RefCell::new(Some(pointer))
+            inner: RwLock::new(Some(pointer))
         }
+    }
+
+    /// Returns `true`, if and only if th "inner" value is initialized.
+    pub fn is_initialized(&self) -> bool {
+        self.inner.read().map(|val| val.is_some()).unwrap_or(false)
     }
 
     /// Returns a pointer to the existing "inner" value, or initializes the
@@ -49,7 +53,10 @@ impl<T> LazyArc<T> {
     where
         F: FnOnce() -> T
     {
-        self.or_try_init_with::<(), _>(|| Ok(init_fn())).unwrap()
+        match self.value() {
+            Some(value) => value,
+            None => or_init_with(self.inner.write().unwrap(), || Arc::new(init_fn()))
+        }
     }
 
     /// Returns a pointer to the existing "inner" value, or tries to
@@ -65,7 +72,10 @@ impl<T> LazyArc<T> {
     where
         F: FnOnce() -> Result<T, E>
     {
-        or_init_with(self.inner.borrow_mut(), || init_fn().map(Arc::new))
+        match self.value() {
+            Some(value) => Ok(value),
+            None => or_try_init_with(self.inner.write().unwrap(), || init_fn().map(Arc::new))
+        }
     }
 
     /// Applies function `map_fn()` to the "inner", if already initialized.
@@ -78,7 +88,7 @@ impl<T> LazyArc<T> {
     where
         F: FnOnce(&Arc<T>) -> U
     {
-        self.inner.borrow().as_ref().map(map_fn)
+        self.inner.read().unwrap().as_ref().map(map_fn)
     }
 
     /// Returns a pointer to the "inner" value, if already initialized.
@@ -88,7 +98,7 @@ impl<T> LazyArc<T> {
     /// "inner" value is **not** initialized yet, the value remains in the
     /// *uninitialized* state and the function returns `None`.
     pub fn value(&self) -> Option<Arc<T>> {
-        self.inner.borrow().as_ref().map(|value| value.clone())
+        self.inner.read().unwrap().as_ref().cloned()
     }
 
     /// Takes the "inner" value out of this `LazyRc<T>` instance, if already
@@ -99,7 +109,14 @@ impl<T> LazyArc<T> {
     /// this `LazyArc<T>` instance' "inner" value to the *uninitialized* state.
     /// Otherwise, the function simply returns `None`.
     pub fn take(&mut self) -> Option<Arc<T>> {
-        self.inner.get_mut().take()
+        self.inner.get_mut().unwrap().take()
+    }
+}
+
+impl <T> Default for LazyArc<T> {
+    /// The default value is a new ***empty*** `LazyArc<T>` instance.
+    fn default() -> Self {
+        Self::empty()
     }
 }
 
@@ -111,7 +128,7 @@ impl<T> Clone for LazyArc<T> {
     /// value is **not** cloned. Otherwise, the clone will initially be
     /// *empty*; it can be initialized ***independently*** from this instance.
     fn clone(&self) -> LazyArc<T> {
-        match self.inner.borrow().as_ref() {
+        match self.inner.read().unwrap().as_ref() {
             Some(existing) => Self::from_pointer(existing.clone()),
             _ => Self::empty(),
         }
