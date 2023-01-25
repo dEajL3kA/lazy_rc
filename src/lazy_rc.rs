@@ -2,45 +2,75 @@
  * lazy_rc - Rc<T> and Arc<T> with *lazy* initialization
  * This is free and unencumbered software released into the public domain.
  */
+use std::fmt::Debug;
+use std::io::{Result as IoResult};
 use std::rc::Rc;
 use std::cell::RefCell;
 
+use crate::InitError;
 use crate::utils::{or_init_with, or_try_init_with};
+
+/// A default initializer for [`LazyRc<T>`](crate::LazyRc)
+type DefaultInit<T> = dyn Fn() -> IoResult<T>;
 
 /// A single-threaded reference-counting pointer, akin to
 /// [`Rc<T>`](std::rc::Rc), but with ***lazy*** initialization
-#[derive(Debug)]
 pub struct LazyRc<T> {
     inner: RefCell<Option<Rc<T>>>,
+    default_init: Option<Box<DefaultInit<T>>>,
 }
 
 impl<T> LazyRc<T> {
-    /// Create a new `LazyArc<T>` that is initially *empty*. It's "inner" value
-    /// will be [initialized](Self::or_init_with()) on first access!
+    /// Create a new `LazyRc<T>` that is initially *empty* and that contains
+    /// **no** *default* initializer.
+    /// 
+    /// The "inner" value will be [initialized](Self::or_init_with()) on first
+    /// access. Default initialization is **not** supported by this instance!
     pub const fn empty() -> Self {
         Self {
-            inner: RefCell::new(None)
+            inner: RefCell::new(None),
+            default_init: None,
         }
     }
 
-    /// Create a new `LazyArc<T>` that is already initialized to `value`.
-    pub fn from_value(value: T) -> Self {
+    /// Create a new `LazyRc<T>` that is initially *empty* and that contains
+    /// the given *default* initializer.
+    /// 
+    /// The "inner" value will be [initialized](Self::or_init_with()) on first
+    /// access. Default initialization *is* supported by this instance.
+    pub fn with_default_init<U>(default_init: U) -> Self
+    where
+        U: Fn() -> IoResult<T> + 'static,
+    {
         Self {
-            inner: RefCell::new(Some(Rc::new(value)))
-        }
-    }
-
-    /// Create a new `LazyArc<T>` that is already initialized to the given
-    /// `Rc<T>` pointer.
-    pub fn from_pointer(pointer: Rc<T>) -> Self {
-        Self {
-            inner: RefCell::new(Some(pointer))
+            inner: RefCell::new(None),
+            default_init: Some(Box::new(default_init)),
         }
     }
 
     /// Returns `true`, if and only if th "inner" value is initialized.
     pub fn is_initialized(&self) -> bool {
         self.inner.borrow().is_some()
+    }
+
+    /// Returns a pointer to the existing "inner" value, or tries to initialize
+    /// the value right now.
+    /// 
+    /// If and only if the "inner" value is **not** initialized yet, the
+    /// "inner" value is set to the return value of the *default* initializer
+    /// and a new `Rc<T>` pointer to the "inner" value is returned. If the
+    /// *default* initializer fails, the error is passed through.
+    /// 
+    /// If **no** *default* initializer is available, an error of type
+    /// [`NoDefaultInitializer`](crate::InitError) is returned.
+    pub fn or_try_init(&self) -> Result<Rc<T>, InitError> {
+        match self.default_init.as_ref() {
+            Some(init) => match or_try_init_with(self.inner.borrow_mut(), || init().map(Rc::new)) {
+                Ok(value) => Ok(value),
+                Err(error) => Err(InitError::Failed(error)),
+            }
+            None => Err(InitError::NoDefaultInitializer)
+        }
     }
 
     /// Returns a pointer to the existing "inner" value, or initializes the
@@ -115,6 +145,49 @@ impl <T> Default for LazyRc<T> {
     }
 }
 
+impl <T> From<T> for LazyRc<T> {
+    /// Create a new `LazyRc<T>` that is already initialized to `value`.
+    fn from(value: T) -> Self {
+        Self {
+            inner: RefCell::new(Some(Rc::new(value))),
+            default_init: None,
+        }
+    }
+}
+
+impl <T> From<&T> for LazyRc<T>
+where
+    T: Clone,
+{
+    /// Create a new `LazyRc<T>` that is already initialized to `value`.
+    fn from(value: &T) -> Self {
+        Self {
+            inner: RefCell::new(Some(Rc::new(value.clone()))),
+            default_init: None,
+        }
+    }
+}
+
+impl <T> From<Rc<T>> for LazyRc<T> {
+    /// Create a new `LazyRc<T>` that is already initialized to `value`.
+    fn from(value: Rc<T>) -> Self {
+        Self {
+            inner: RefCell::new(Some(value)),
+            default_init: None,
+        }
+    }
+}
+
+impl <T> From<&Rc<T>> for LazyRc<T> {
+    /// Create a new `LazyRc<T>` that is already initialized to `value`.
+    fn from(value: &Rc<T>) -> Self {
+        Self {
+            inner: RefCell::new(Some(value.clone())),
+            default_init: None,
+        }
+    }
+}
+
 impl<T> Clone for LazyRc<T> {
     /// Creates a clone of this `LazyRc<T>` instance.
     /// 
@@ -124,8 +197,16 @@ impl<T> Clone for LazyRc<T> {
     /// *empty*; it can be initialized ***independently*** from this instance.
     fn clone(&self) -> LazyRc<T> {
         match self.inner.borrow().as_ref() {
-            Some(existing) => Self::from_pointer(existing.clone()),
+            Some(existing) => Self::from(existing),
             _ => Self::empty(),
         }
+    }
+}
+
+impl<T> Debug for LazyRc<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "LazyRc {{ default_init: {}, is_initialized: {} }}",
+            self.default_init.is_some(),
+            self.inner.borrow().is_some())
     }
 }

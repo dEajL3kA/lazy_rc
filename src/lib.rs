@@ -64,3 +64,4 @@ pub(crate) mod utils;
 
 pub use lazy_arc::LazyArc;
 pub use lazy_rc::LazyRc;
+pub use utils::InitError;
