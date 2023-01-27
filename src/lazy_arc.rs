@@ -7,16 +7,13 @@ use std::io::{Result as IoResult};
 use std::sync::{Arc, RwLock};
 
 use crate::InitError;
-use crate::utils::{or_init_with, or_try_init_with};
-
-/// A default initializer for [`LazyArc<T>`](crate::LazyArc)
-type DefaultInit<T> = dyn Fn() -> IoResult<T> + Sync;
+use crate::utils::{DefaultInit, or_init_with, or_try_init_with};
 
 /// A thread-safe reference-counting pointer, akin to
 /// [`Arc<T>`](std::sync::Arc), but with ***lazy*** initialization
 pub struct LazyArc<T> {
     inner: RwLock<Option<Arc<T>>>,
-    default_init: Option<Box<DefaultInit<T>>>,
+    default_init: DefaultInit<T>,
 }
 
 impl<T> LazyArc<T> {
@@ -28,7 +25,7 @@ impl<T> LazyArc<T> {
     pub const fn empty() -> Self {
         Self {
             inner: RwLock::new(None),
-            default_init: None,
+            default_init: DefaultInit::None,
         }
     }
 
@@ -39,11 +36,26 @@ impl<T> LazyArc<T> {
     /// access. Default initialization *is* supported by this instance.
     pub fn with_default_init<U>(default_init: U) -> Self
     where
+        U: Fn() -> T + Sync + 'static,
+    {
+        Self {
+            inner: RwLock::new(None),
+            default_init: DefaultInit::Infailable(Box::new(default_init)),
+        }
+    }
+
+    /// Create a new `LazyArc<T>` that is initially *empty* and that contains
+    /// the given failable *default* initializer.
+    /// 
+    /// The "inner" value will be [initialized](Self::or_init_with()) on first
+    /// access. Default initialization *is* supported by this instance.
+    pub fn with_failable_default_init<U>(default_init: U) -> Self
+    where
         U: Fn() -> IoResult<T> + Sync + 'static,
     {
         Self {
             inner: RwLock::new(None),
-            default_init: Some(Box::new(default_init)),
+            default_init: DefaultInit::Failable(Box::new(default_init)),
         }
     }
 
@@ -57,18 +69,37 @@ impl<T> LazyArc<T> {
     /// 
     /// If and only if the "inner" value is **not** initialized yet, the
     /// "inner" value is set to the return value of the *default* initializer
+    /// and a new `Arc<T>` pointer to the "inner" value is returned. The
+    /// default initializer **must** be *infailable*, otherwise use
+    /// [`or_try_init()`](Self::or_try_init)!
+    /// 
+    /// Warning: This function [panics](mod@std::panic), if **no** *default*
+    /// initializer is available, or of the default initializer is *failable*!
+    pub fn or_init(&self) -> Arc<T> {
+        match &self.default_init {
+            DefaultInit::Infailable(init) => or_init_with(self.inner.write().unwrap(), || Arc::new(init())),
+            _ => panic!("No infailable default initializer!"),
+        }
+    }
+
+    /// Returns a pointer to the existing "inner" value, or tries to initialize
+    /// the value right now.
+    /// 
+    /// If and only if the "inner" value is **not** initialized yet, the
+    /// "inner" value is set to the return value of the *default* initializer
     /// and a new `Arc<T>` pointer to the "inner" value is returned. If the
     /// *default* initializer fails, the error is passed through.
     /// 
     /// If **no** *default* initializer is available, an error of type
     /// [`NoDefaultInitializer`](crate::InitError) is returned.
     pub fn or_try_init(&self) -> Result<Arc<T>, InitError> {
-        match self.default_init.as_ref() {
-            Some(init) => match or_try_init_with(self.inner.write().unwrap(), || init().map(Arc::new)) {
+        match &self.default_init {
+            DefaultInit::Infailable(init) => Ok(or_init_with(self.inner.write().unwrap(), || Arc::new(init()))),
+            DefaultInit::Failable(init) => match or_try_init_with(self.inner.write().unwrap(), || init().map(Arc::new)) {
                 Ok(value) => Ok(value),
                 Err(error) => Err(InitError::Failed(error)),
-            }
-            None => Err(InitError::NoDefaultInitializer)
+            },
+            DefaultInit::None => Err(InitError::NoDefaultInitializer)
         }
     }
 
@@ -108,6 +139,11 @@ impl<T> LazyArc<T> {
         }
     }
 
+    /// An alias for the [`or_init()`](Self::or_init) function.
+    pub fn unwrap(&self) -> Arc<T> {
+        self.or_init()
+    }
+    
     /// Applies function `map_fn()` to the "inner", if already initialized.
     /// 
     /// If and only if the "inner" value already *is* initialize, the function
@@ -155,7 +191,7 @@ impl <T> From<T> for LazyArc<T> {
     fn from(value: T) -> Self {
         Self {
             inner: RwLock::new(Some(Arc::new(value))),
-            default_init: None,
+            default_init: DefaultInit::None,
         }
     }
 }
@@ -168,7 +204,7 @@ where
     fn from(value: &T) -> Self {
         Self {
             inner: RwLock::new(Some(Arc::new(value.clone()))),
-            default_init: None,
+            default_init: DefaultInit::None,
         }
     }
 }
@@ -178,7 +214,7 @@ impl <T> From<Arc<T>> for LazyArc<T> {
     fn from(value: Arc<T>) -> Self {
         Self {
             inner: RwLock::new(Some(value)),
-            default_init: None,
+            default_init: DefaultInit::None,
         }
     }
 }
@@ -188,7 +224,7 @@ impl <T> From<&Arc<T>> for LazyArc<T> {
     fn from(value: &Arc<T>) -> Self {
         Self {
             inner: RwLock::new(Some(value.clone())),
-            default_init: None,
+            default_init: DefaultInit::None,
         }
     }
 }
@@ -210,8 +246,8 @@ impl<T> Clone for LazyArc<T> {
 
 impl<T> Debug for LazyArc<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "LazyArc {{ default_init: {}, is_initialized: {} }}",
-            self.default_init.is_some(),
+        write!(f, "LazyArc {{ default_init: {:?}, is_initialized: {:?} }}",
+            self.default_init,
             self.inner.read().unwrap().is_some())
     }
 }

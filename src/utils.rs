@@ -3,9 +3,30 @@
  * This is free and unencumbered software released into the public domain.
  */
 use std::error::Error;
-use std::io::Error as IoError;
+use std::fmt::Debug;
+use std::io::{Error as IoError, Result as IoResult};
 use std::fmt::Display;
 use std::ops::DerefMut;
+
+type FnInit<T> = dyn Fn() -> T + Sync;
+type FnInitFailable<T> = dyn Fn() -> IoResult<T> + Sync;
+
+/// A wrapper that optionally contains a (possibly failable) initializer.
+pub enum DefaultInit<T> {
+    None,
+    Infailable(Box<FnInit<T>>),
+    Failable(Box<FnInitFailable<T>>),
+}
+
+/// An error that indicates that the initialization has failed.
+#[derive(Debug)]
+pub enum InitError {
+    /// Initialization failed, because **no** default initializer is available!
+    NoDefaultInitializer,
+    /// The initializer function has failed! The original error is forwarded as
+    /// "inner" value of this [`InitError`] variant.
+    Failed(IoError),
+}
 
 pub fn or_init_with<T, F>(mut inner: impl DerefMut<Target = Option<T>>, init_fn: F) -> T
 where
@@ -35,21 +56,21 @@ where
     }
 }
 
-/// An error that indicates that the initialization has failed.
-#[derive(Debug)]
-pub enum InitError {
-    /// Initialization failed, because **no** default initializer is available!
-    NoDefaultInitializer,
-    /// The initializer function has failed! The original error is forwarded as
-    /// "inner" value of this [`InitError`] variant.
-    Failed(IoError),
+impl<T> Debug for DefaultInit<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::None => write!(f, "None"),
+            Self::Infailable(_) => write!(f, "Infailable"),
+            Self::Failable(_) => write!(f, "Failable"),
+        }
+    }
 }
 
 impl Display for InitError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             InitError::NoDefaultInitializer => write!(f, "No default initializer available!"),
-            InitError::Failed(error) => error.fmt(f),
+            InitError::Failed(error) => Display::fmt(&error, f),
         }
     }
 }

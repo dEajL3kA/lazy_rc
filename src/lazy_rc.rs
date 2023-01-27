@@ -8,16 +8,13 @@ use std::rc::Rc;
 use std::cell::RefCell;
 
 use crate::InitError;
-use crate::utils::{or_init_with, or_try_init_with};
-
-/// A default initializer for [`LazyRc<T>`](crate::LazyRc)
-type DefaultInit<T> = dyn Fn() -> IoResult<T>;
+use crate::utils::{DefaultInit, or_init_with, or_try_init_with};
 
 /// A single-threaded reference-counting pointer, akin to
 /// [`Rc<T>`](std::rc::Rc), but with ***lazy*** initialization
 pub struct LazyRc<T> {
     inner: RefCell<Option<Rc<T>>>,
-    default_init: Option<Box<DefaultInit<T>>>,
+    default_init: DefaultInit<T>,
 }
 
 impl<T> LazyRc<T> {
@@ -29,7 +26,7 @@ impl<T> LazyRc<T> {
     pub const fn empty() -> Self {
         Self {
             inner: RefCell::new(None),
-            default_init: None,
+            default_init: DefaultInit::None,
         }
     }
 
@@ -40,11 +37,26 @@ impl<T> LazyRc<T> {
     /// access. Default initialization *is* supported by this instance.
     pub fn with_default_init<U>(default_init: U) -> Self
     where
-        U: Fn() -> IoResult<T> + 'static,
+        U: Fn() -> T + Sync + 'static,
     {
         Self {
             inner: RefCell::new(None),
-            default_init: Some(Box::new(default_init)),
+            default_init: DefaultInit::Infailable(Box::new(default_init)),
+        }
+    }
+
+    /// Create a new `LazyRc<T>` that is initially *empty* and that contains
+    /// the given failable *default* initializer.
+    /// 
+    /// The "inner" value will be [initialized](Self::or_init_with()) on first
+    /// access. Default initialization *is* supported by this instance.
+    pub fn with_failable_default_init<U>(default_init: U) -> Self
+    where
+        U: Fn() -> IoResult<T> + Sync + 'static,
+    {
+        Self {
+            inner: RefCell::new(None),
+            default_init: DefaultInit::Failable(Box::new(default_init)),
         }
     }
 
@@ -58,18 +70,37 @@ impl<T> LazyRc<T> {
     /// 
     /// If and only if the "inner" value is **not** initialized yet, the
     /// "inner" value is set to the return value of the *default* initializer
+    /// and a new `Rc<T>` pointer to the "inner" value is returned. The
+    /// default initializer **must** be *infailable*, otherwise use
+    /// [`or_try_init()`](Self::or_try_init)!
+    /// 
+    /// Warning: This function [panics](mod@std::panic), if **no** *default*
+    /// initializer is available, or of the default initializer is *failable*!
+    pub fn or_init(&self) -> Rc<T> {
+        match &self.default_init {
+            DefaultInit::Infailable(init) => or_init_with(self.inner.borrow_mut(), || Rc::new(init())),
+            _ => panic!("No infailable default initializer!"),
+        }
+    }
+
+    /// Returns a pointer to the existing "inner" value, or tries to initialize
+    /// the value right now.
+    /// 
+    /// If and only if the "inner" value is **not** initialized yet, the
+    /// "inner" value is set to the return value of the *default* initializer
     /// and a new `Rc<T>` pointer to the "inner" value is returned. If the
     /// *default* initializer fails, the error is passed through.
     /// 
     /// If **no** *default* initializer is available, an error of type
     /// [`NoDefaultInitializer`](crate::InitError) is returned.
     pub fn or_try_init(&self) -> Result<Rc<T>, InitError> {
-        match self.default_init.as_ref() {
-            Some(init) => match or_try_init_with(self.inner.borrow_mut(), || init().map(Rc::new)) {
+        match &self.default_init {
+            DefaultInit::Infailable(init) => Ok(or_init_with(self.inner.borrow_mut(), || Rc::new(init()))),
+            DefaultInit::Failable(init) => match or_try_init_with(self.inner.borrow_mut(), || init().map(Rc::new)) {
                 Ok(value) => Ok(value),
                 Err(error) => Err(InitError::Failed(error)),
-            }
-            None => Err(InitError::NoDefaultInitializer)
+            },
+            DefaultInit::None => Err(InitError::NoDefaultInitializer)
         }
     }
 
@@ -101,6 +132,11 @@ impl<T> LazyRc<T> {
         F: FnOnce() -> Result<T, E>
     {
         or_try_init_with(self.inner.borrow_mut(), || init_fn().map(Rc::new))
+    }
+
+    /// An alias for the [`or_init()`](Self::or_init) function.
+    pub fn unwrap(&self) -> Rc<T> {
+        self.or_init()
     }
 
     /// Applies function `map_fn()` to the "inner", if already initialized.
@@ -150,7 +186,7 @@ impl <T> From<T> for LazyRc<T> {
     fn from(value: T) -> Self {
         Self {
             inner: RefCell::new(Some(Rc::new(value))),
-            default_init: None,
+            default_init: DefaultInit::None,
         }
     }
 }
@@ -163,7 +199,7 @@ where
     fn from(value: &T) -> Self {
         Self {
             inner: RefCell::new(Some(Rc::new(value.clone()))),
-            default_init: None,
+            default_init: DefaultInit::None,
         }
     }
 }
@@ -173,7 +209,7 @@ impl <T> From<Rc<T>> for LazyRc<T> {
     fn from(value: Rc<T>) -> Self {
         Self {
             inner: RefCell::new(Some(value)),
-            default_init: None,
+            default_init: DefaultInit::None,
         }
     }
 }
@@ -183,7 +219,7 @@ impl <T> From<&Rc<T>> for LazyRc<T> {
     fn from(value: &Rc<T>) -> Self {
         Self {
             inner: RefCell::new(Some(value.clone())),
-            default_init: None,
+            default_init: DefaultInit::None,
         }
     }
 }
@@ -205,8 +241,8 @@ impl<T> Clone for LazyRc<T> {
 
 impl<T> Debug for LazyRc<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "LazyRc {{ default_init: {}, is_initialized: {} }}",
-            self.default_init.is_some(),
+        write!(f, "LazyRc {{ default_init: {:?}, is_initialized: {:?} }}",
+            self.default_init,
             self.inner.borrow().is_some())
     }
 }
